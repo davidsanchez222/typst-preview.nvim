@@ -57,6 +57,51 @@ local function normalize_export_args(path, output)
   return args
 end
 
+local function parse_typst_diagnostics(text)
+  if text == nil or text == '' then
+    return nil, nil
+  end
+
+  local blocks = {}
+  local current = nil
+
+  for line in (text .. '\n'):gmatch '([^\n]*)\n' do
+    if line:match '^warning:' or line:match '^error:' then
+      if current ~= nil then
+        table.insert(blocks, current)
+      end
+      current = { kind = line:match '^(%w+):', lines = { line } }
+    elseif current ~= nil then
+      table.insert(current.lines, line)
+    end
+  end
+
+  if current ~= nil then
+    table.insert(blocks, current)
+  end
+
+  local warnings = {}
+  local errors = {}
+  for _, block in ipairs(blocks) do
+    local filtered = {}
+    for _, line in ipairs(block.lines) do
+      if not line:match '^[%s]*[┌└│]' then
+        table.insert(filtered, line)
+      end
+    end
+    local msg = table.concat(filtered, '\n')
+    if block.kind == 'warning' then
+      table.insert(warnings, msg)
+    elseif block.kind == 'error' then
+      table.insert(errors, msg)
+    end
+  end
+
+  local warn_text = #warnings > 0 and table.concat(warnings, '\n') or nil
+  local err_text = #errors > 0 and table.concat(errors, '\n') or nil
+  return warn_text, err_text
+end
+
 ---Scroll all preview to cursor position.
 function M.sync_with_cursor()
   for _, ser in pairs(servers.get_all()) do
@@ -102,14 +147,25 @@ function M.export_pdf(output)
     end
 
     local err_msg = table.concat(err_chunks, '')
+    local warn_text, err_text = parse_typst_diagnostics(err_msg)
     if code == 0 then
+      if warn_text ~= nil then
+        utils.notify(warn_text, vim.log.levels.WARN)
+      end
       utils.notify('Exported PDF to ' .. output, vim.log.levels.INFO)
     else
-      if err_msg == '' then
-        err_msg = table.concat(out_chunks, '')
+      if warn_text ~= nil then
+        utils.notify(warn_text, vim.log.levels.WARN)
+      end
+      local report = err_text
+      if report == nil or report == '' then
+        report = err_msg
+      end
+      if report == '' then
+        report = table.concat(out_chunks, '')
       end
       utils.notify(
-        'typst compile failed (exit ' .. tostring(code) .. '): ' .. err_msg,
+        'typst compile failed (exit ' .. tostring(code) .. '): ' .. report,
         vim.log.levels.ERROR
       )
     end
